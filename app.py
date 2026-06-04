@@ -69,12 +69,12 @@ def dashboard():
     # ❌ No authentication check - anyone can access this
     user = request.args.get("user", "guest")
 
-    # ❌ XSS vulnerability - user input reflected without escaping
-    return render_template_string(f"""
+    # Use a constant template and pass untrusted data as a template variable.
+    return render_template_string("""
         <h1>Dashboard</h1>
-        <p>Welcome back, {user}!</p>
+        <p>Welcome back, {{ user }}!</p>
         <p>You have admin access.</p>
-    """)
+    """, user=user)
 
 @app.route("/api/users")
 def get_users():
