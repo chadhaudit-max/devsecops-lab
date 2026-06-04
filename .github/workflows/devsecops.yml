@@ -1,5 +1,9 @@
 # .github/workflows/devsecops.yml
-# This pipeline runs on every push and scans for security issues
+# Updated pipeline with:
+# - Checkov IaC scanning
+# - Gitleaks secrets scanning
+# - SARIF artifacts saved
+# - Auto-upload to DefectDojo
 
 name: DevSecOps Pipeline
 
@@ -35,6 +39,14 @@ jobs:
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:python"
+          output: codeql-results.sarif
+
+      - name: Upload CodeQL SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-results
+          path: codeql-results.sarif
+          retention-days: 7
 
   # ── 2. SAST: Semgrep ─────────────────────────────────────────
   semgrep:
@@ -55,8 +67,16 @@ jobs:
             p/flask
             p/owasp-top-ten
             p/secrets
+          generateSarif: "1"
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+      - name: Upload Semgrep SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results
+          path: semgrep.sarif
+          retention-days: 7
 
   # ── 3. Container Scan: Trivy ──────────────────────────────────
   trivy:
@@ -84,8 +104,47 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
-  
-  # ── 4. Secrets Scan: Gitleaks ──────────────────────────────────
+
+      - name: Upload Trivy SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-results.sarif
+          retention-days: 7
+
+  # ── 4. IaC Scan: Checkov ──────────────────────────────────────
+  checkov:
+    name: Checkov IaC Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Checkov on Terraform
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform/
+          framework: terraform
+          output_format: sarif
+          output_file_path: checkov-results.sarif
+          soft_fail: true
+
+      - name: Upload Checkov results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov-results.sarif
+
+      - name: Upload Checkov SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-results
+          path: checkov-results.sarif
+          retention-days: 7
+
+  # ── 5. Secrets Scan: Gitleaks ────────────────────────────────
   gitleaks:
     name: Gitleaks Secrets Scan
     runs-on: ubuntu-latest
@@ -99,3 +158,45 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── 6. Upload all results to DefectDojo ───────────────────────
+  defectdojo-upload:
+    name: Upload to DefectDojo
+    runs-on: ubuntu-latest
+    needs: [codeql, semgrep, trivy, checkov, gitleaks]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Download all SARIF artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: sarif-results/
+
+      - name: Upload Trivy results to DefectDojo
+        run: |
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+          -F "scan_type=SARIF" \
+          -F "file=@sarif-results/trivy-results/trivy-results.sarif" \
+          -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+          -F "verified=false" \
+          -F "active=true"
+
+      - name: Upload Semgrep results to DefectDojo
+        run: |
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+          -F "scan_type=SARIF" \
+          -F "file=@sarif-results/semgrep-results/semgrep.sarif" \
+          -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+          -F "verified=false" \
+          -F "active=true"
+
+      - name: Upload Checkov results to DefectDojo
+        run: |
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+          -F "scan_type=SARIF" \
+          -F "file=@sarif-results/checkov-results/checkov-results.sarif" \
+          -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+          -F "verified=false" \
+          -F "active=true"
